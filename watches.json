@@ -1,0 +1,28 @@
+{
+  "headless": false,
+  "seatThreshold": 4,
+  "triggers": {
+    "priceChange": true,
+    "seatsLow": true,
+    "cheaperBucket": true
+  },
+  "watches": [
+    {
+      "id": "lima-mar2027",
+      "name": "Lima trip (YYZ\u2194LIM, Mar 13\u201321)",
+      "origin": "YYZ",
+      "destination": "LIM",
+      "departureDate": "2027-03-13",
+      "returnDate": "2027-03-21",
+      "promoCode": "",
+      "passengers": {
+        "adt": 2,
+        "yth": 1,
+        "chd": 0,
+        "inf": 0,
+        "ins": 0
+      }
+    }
+  ],
+  "jitterMaxMinutes": 25
+}

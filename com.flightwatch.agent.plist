@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent — runs flightwatch at two odd, off-hours times (local).
+  The script also adds up to ~25 min of random "jitter" on top, so the
+  actual request never lands at a fixed clock minute.
+
+  BEFORE USING, replace the two __PLACEHOLDER__ paths (install.sh does this):
+    __NODE_PATH__     -> output of:  which node
+    __PROJECT_DIR__   -> full path to this folder
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.flightwatch.agent</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE_PATH__</string>
+    <string>__PROJECT_DIR__/flightwatch.js</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__PROJECT_DIR__</string>
+
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key><integer>2</integer>
+      <key>Minute</key><integer>17</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>4</integer>
+      <key>Minute</key><integer>43</integer>
+    </dict>
+  </array>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>__PROJECT_DIR__/flightwatch.log</string>
+  <key>StandardErrorPath</key>
+  <string>__PROJECT_DIR__/flightwatch.log</string>
+</dict>
+</plist>

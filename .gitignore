@@ -1,0 +1,8 @@
+node_modules/
+.browser-profile/
+state/
+.env
+*.log
+*.bak
+*.out
+verify.out
