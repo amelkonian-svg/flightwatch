@@ -55,3 +55,14 @@ far-out dates and appear automatically as AC publishes them near departure.
 - `state/` is auto-created (`fs.mkdirSync(STATE_DIR,{recursive:true})`) — was an ENOENT crash.
 - Don't kill a run mid-capture; it can corrupt `.browser-profile`. If capture starts failing
   with "browser has been closed", `rm -rf .browser-profile` and re-run.
+
+## Adding / managing watches
+- `node add-watch.js` — interactive: prompts origin, destination, dates, passengers, label; appends to `watches.json` with a unique id.
+- `watches.json` is USER-OWNED and gitignored. `watches.example.json` is the template. `setup.sh` seeds `watches.json` from it on a fresh machine. Updates never clobber it.
+- Update code later: `./update.sh` (curl-pulls latest, leaves `watches.json`/`.env`/`state/` alone).
+
+## Seat display
+- `disclosedSeatCeiling` (watches.json, default 9): AC only returns an exact `seatsLeft` when inventory is low; otherwise null. Null renders as "9+ seats"; a real number renders as "3 seats". Tune the ceiling to taste.
+
+## eUpgrade — NOT available from anonymous data
+- `eUpgradeStatus` and `eUpgradeInfo` exist in the payload but are ALWAYS null for anonymous searches. AC only populates them for a signed-in Aeroplan member with upgrade privileges. Deducing eUpgrade eligibility/space would require an authenticated aircanada.com login (credentials + possible 2FA + login bot checks) — a separate, more fragile feature. Not implemented. Do not fake it from fare brands.

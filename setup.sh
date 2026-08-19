@@ -5,6 +5,7 @@ set -e
 cd "$(cd "$(dirname "$0")" && pwd)"
 echo "== flightwatch setup =="
 command -v node >/dev/null || { echo "Install Node 18+ first:  brew install node"; exit 1; }
+[ -f watches.json ] || { cp watches.example.json watches.json; echo "Created watches.json from the example (edit it or run: node add-watch.js)."; }
 echo "Installing dependencies + browser (one-time, a few hundred MB)..."
 npm install
 npx playwright install chromium

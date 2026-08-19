@@ -6,3 +6,4 @@ state/
 *.bak
 *.out
 verify.out
+watches.json

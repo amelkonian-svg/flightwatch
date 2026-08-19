@@ -39,11 +39,13 @@ const PUSHOVER_USER = process.env.PUSHOVER_USER;
 
 const CABIN_NAMES = { Y: 'Economy', O: 'Premium Economy', J: 'Business', P: 'Premium Economy', N: 'Economy' };
 const CABIN_ORDER = ['Economy', 'Premium Economy', 'Business'];
+let SEAT_CEILING = 9; // AC only discloses exact seatsLeft when low; null => "more than this many"
 
 // ---------- helpers ----------
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const money = n => '$' + Number(n).toLocaleString('en-CA');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const seatText = s => (s == null ? `${SEAT_CEILING}+ seats` : `${s} seat${s === 1 ? '' : 's'}`);
 
 function ddmmyyyy(iso) {
   const [y, m, d] = iso.split('-');
@@ -122,10 +124,8 @@ function orderedCabins(snap) {
 function compactLadder(snap) {
   const lines = [];
   for (const name of orderedCabins(snap)) {
-    const rungs = snap.cabins[name].ladder.map(b => {
-      const seat = b.seatsLeft != null ? ` (${b.seatsLeft} seat${b.seatsLeft === 1 ? '' : 's'})` : '';
-      return `${b.bucket} ${money(b.perPax)}${seat}`;
-    });
+    const rungs = snap.cabins[name].ladder.map(b =>
+      `${b.bucket} ${money(b.perPax)} (${seatText(b.seatsLeft)})`);
     lines.push(`${name}: ${rungs.join(' · ')}`);
   }
   return lines.join('\n');
@@ -136,8 +136,7 @@ function fullLadder(snap) {
   for (const name of orderedCabins(snap)) {
     lines.push(`  ${name}:`);
     for (const b of snap.cabins[name].ladder) {
-      const seat = b.seatsLeft != null ? String(b.seatsLeft) : '—';
-      lines.push(`    ${b.bucket.padEnd(7)} ${money(b.perPax).padEnd(8)} ${String(b.fareFamily).padEnd(11)} seats:${seat}  (${b.flights} flt)`);
+      lines.push(`    ${b.bucket.padEnd(7)} ${money(b.perPax).padEnd(8)} ${String(b.fareFamily).padEnd(11)} ${seatText(b.seatsLeft).padEnd(10)} (${b.flights} flt)`);
     }
   }
   return lines.join('\n');
@@ -250,6 +249,7 @@ async function runWatch(context, w, cfg) {
 async function main() {
   const cfg = JSON.parse(fs.readFileSync(path.join(DIR, 'watches.json'), 'utf8'));
   const watches = cfg.watches || [];
+  SEAT_CEILING = cfg.disclosedSeatCeiling ?? 9;
   if (!watches.length) { log('No watches configured in watches.json'); return; }
 
   // jitter: random delay before hitting AC so scheduled runs don't fire at an exact clock time
