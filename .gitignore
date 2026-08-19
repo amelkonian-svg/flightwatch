@@ -7,3 +7,5 @@ state/
 *.out
 verify.out
 watches.json
+eu_raw.json
+eu*.png

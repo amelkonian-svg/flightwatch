@@ -3,10 +3,12 @@
   "seatThreshold": 4,
   "disclosedSeatCeiling": 9,
   "jitterMaxMinutes": 25,
+  "eUpgrade": { "enabled": true, "cabin": "J", "tierCode": "SE" },
   "triggers": {
     "priceChange": true,
     "seatsLow": true,
-    "cheaperBucket": true
+    "cheaperBucket": true,
+    "eUpgrade": true
   },
   "watches": [
     {

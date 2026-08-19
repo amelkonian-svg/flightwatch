@@ -1,18 +1,14 @@
 #!/usr/bin/env node
 /*
- * flightwatch — a real-browser Air Canada fare & bucket watcher.
+ * flightwatch — a real-browser Air Canada fare, bucket & eUpgrade watcher.
  *
- * Captures Air Canada's own Low Fare Search API response
- * (getFlightRecommendations) via a real Chromium, extracts the full
- * booking-class "bucket" ladder per cabin (with seats-left when AC
- * exposes it), diffs it against the last run, and pushes to Pushover
- * when something you care about changes.
+ * Captures AC's getFlightRecommendations response via a real Chromium,
+ * extracts the booking-class "bucket" ladder per cabin (+ seatsLeft when
+ * AC exposes it), optionally drives the eUpgrade toggle (Aeroplan tier)
+ * to capture upgrade eligibility/space/credits, diffs against the last
+ * run, and pushes phone alerts via Pushover.
  *
- * IMPORTANT: Air Canada blocks headless browsers and datacenter IPs.
- * Run this on a normal machine on a home/residential connection with
- * "headless": false. A small random start delay ("jitter") plus odd
- * run times keep the request pattern from looking robotic.
- *
+ * Must run HEADED on a residential connection. See CLAUDE.md / README.
  * No secrets live in this file. Pushover creds come from .env / env.
  */
 
@@ -24,7 +20,6 @@ const DIR = __dirname;
 const STATE_DIR = path.join(DIR, 'state');
 fs.mkdirSync(STATE_DIR, { recursive: true });
 
-// ---------- tiny .env loader (no dependency) ----------
 (function loadEnv() {
   const envPath = path.join(DIR, '.env');
   if (!fs.existsSync(envPath)) return;
@@ -41,7 +36,6 @@ const CABIN_NAMES = { Y: 'Economy', O: 'Premium Economy', J: 'Business', P: 'Pre
 const CABIN_ORDER = ['Economy', 'Premium Economy', 'Business'];
 let SEAT_CEILING = 9; // AC only discloses exact seatsLeft when low; null => "more than this many"
 
-// ---------- helpers ----------
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const money = n => '$' + Number(n).toLocaleString('en-CA');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -68,7 +62,8 @@ function buildSearchUrl(w) {
   return `https://www.aircanada.com/booking/ca/en/aco/search?${q}`;
 }
 
-function extractSnapshot(payload, seatThreshold) {
+// Build the bucket ladder per cabin (+ optional eUpgrade-to-target detail).
+function extractSnapshot(payload, seatThreshold, euTargetName) {
   const recs = payload?.data?.getFlightRecommendations?.responseData?.recommendations || [];
   const cabins = {};
 
@@ -76,10 +71,14 @@ function extractSnapshot(payload, seatThreshold) {
     const bd = rec.boundDetails || {};
     const segs = bd.segments || [];
     const flight = segs.map(s => (s.flight?.flightId || s.flight?.marketingAirline?.code || '')).filter(Boolean).join('+') || '(flight)';
+    const flightShort = segs.map(s => {
+      const id = s.flight?.flightId || '';
+      const m = id.match(/-([A-Z]{2}\d+)-/); return m ? m[1] : (s.flight?.marketingAirline?.code || '');
+    }).filter(Boolean).join('+') || flight;
 
     for (const cab of (rec.fareDetails?.cabin || [])) {
       const name = CABIN_NAMES[cab.cabinCode] || cab.cabinCode || '?';
-      const c = cabins[name] ||= { buckets: {} };
+      const c = cabins[name] ||= { buckets: {}, euCandidates: [] };
 
       for (const off of (cab.offers || [])) {
         const total = off.prices?.priceSummary?.totalFareRounded;
@@ -95,16 +94,48 @@ function extractSnapshot(payload, seatThreshold) {
         if (total < b.perPax) { b.perPax = total; b.allPax = allPax; b.fareFamily = ff; }
         if (seatsLeft != null) b.seatsLeft = (b.seatsLeft == null) ? seatsLeft : Math.min(b.seatsLeft, seatsLeft);
         b.flights.add(flight);
+
+        // eUpgrade: aggregate the per-segment eUpgradeInfo for this offer
+        const infos = ad.map(a => a.eUpgradeInfo);
+        if (infos.some(x => x)) {
+          const eligible = infos.every(x => x && x.status && x.status !== 'Ineligible');
+          if (eligible) {
+            const space = infos.every(x => /^Available/.test(x.status));
+            const inWindow = infos.every(x => x.isInClearanceWindow);
+            const credits = infos.reduce((s, x) => s + (x.credits || 0), 0);
+            const copay = infos.reduce((s, x) => s + (x.additionalAmount || 0), 0);
+            c.euCandidates.push({ flight: flightShort, bucket, credits, copay, space, inWindow });
+          }
+        }
       }
     }
   }
 
-  const out = { ts: new Date().toISOString(), cabins: {}, lowSeats: [] };
+  const out = { ts: new Date().toISOString(), cabins: {}, lowSeats: [], euTarget: euTargetName || null };
   for (const [name, c] of Object.entries(cabins)) {
     const ladder = Object.values(c.buckets)
       .map(b => ({ bucket: b.bucket, perPax: b.perPax, allPax: b.allPax, fareFamily: b.fareFamily, seatsLeft: b.seatsLeft, flights: b.flights.size }))
       .sort((a, b) => a.perPax - b.perPax);
-    out.cabins[name] = { ladder, cheapest: ladder[0] || null };
+    const entry = { ladder, cheapest: ladder[0] || null };
+
+    if (c.euCandidates.length) {
+      const withSpace = c.euCandidates.filter(x => x.space);
+      const pool = (withSpace.length ? withSpace : c.euCandidates).sort((a, b) => a.credits - b.credits);
+      const pick = pool[0];
+      entry.eUpgrade = {
+        anySpace: withSpace.length > 0,
+        spaceCount: withSpace.length,
+        minCredits: pick.credits,
+        copay: pick.copay,
+        inWindow: pick.inWindow,
+        flight: pick.flight,
+        bucket: pick.bucket,
+        spaceFlights: withSpace.sort((a, b) => a.credits - b.credits).slice(0, 5)
+          .map(x => ({ flight: x.flight, bucket: x.bucket, credits: x.credits, copay: x.copay, inWindow: x.inWindow })),
+      };
+    }
+    out.cabins[name] = entry;
+
     for (const b of ladder) {
       if (b.seatsLeft != null && b.seatsLeft <= seatThreshold) {
         out.lowSeats.push({ cabin: name, bucket: b.bucket, fareFamily: b.fareFamily, seatsLeft: b.seatsLeft, perPax: b.perPax });
@@ -121,12 +152,22 @@ function orderedCabins(snap) {
   });
 }
 
+function euText(eu, target) {
+  if (!eu) return null;
+  const t = target || 'Business';
+  const cost = `${eu.minCredits} cr${eu.copay ? ` +$${eu.copay}` : ''}`;
+  if (eu.anySpace) return `↑${t}: ✅ space on ${eu.spaceCount} flt, from ${cost}${eu.inWindow ? ' (in clearance)' : ' (clears near departure)'}`;
+  return `↑${t}: no space yet, from ${cost}`;
+}
+
 function compactLadder(snap) {
   const lines = [];
   for (const name of orderedCabins(snap)) {
-    const rungs = snap.cabins[name].ladder.map(b =>
-      `${b.bucket} ${money(b.perPax)} (${seatText(b.seatsLeft)})`);
+    const c = snap.cabins[name];
+    const rungs = c.ladder.map(b => `${b.bucket} ${money(b.perPax)} (${seatText(b.seatsLeft)})`);
     lines.push(`${name}: ${rungs.join(' · ')}`);
+    const e = euText(c.eUpgrade, snap.euTarget);
+    if (e) lines.push(`  ${e}`);
   }
   return lines.join('\n');
 }
@@ -134,9 +175,17 @@ function compactLadder(snap) {
 function fullLadder(snap) {
   const lines = [];
   for (const name of orderedCabins(snap)) {
+    const c = snap.cabins[name];
     lines.push(`  ${name}:`);
-    for (const b of snap.cabins[name].ladder) {
+    for (const b of c.ladder) {
       lines.push(`    ${b.bucket.padEnd(7)} ${money(b.perPax).padEnd(8)} ${String(b.fareFamily).padEnd(11)} ${seatText(b.seatsLeft).padEnd(10)} (${b.flights} flt)`);
+    }
+    const e = euText(c.eUpgrade, snap.euTarget);
+    if (e) {
+      lines.push(`      ${e}`);
+      for (const f of (c.eUpgrade.spaceFlights || [])) {
+        lines.push(`        ${f.flight} (${f.bucket}): ${f.credits} cr${f.copay ? ` +$${f.copay}` : ''}${f.inWindow ? ' in-clearance' : ''}`);
+      }
     }
   }
   return lines.join('\n');
@@ -144,6 +193,7 @@ function fullLadder(snap) {
 
 function diff(prev, cur, seatThreshold, triggers) {
   const lines = [];
+  const target = cur.euTarget || 'Business';
   for (const name of orderedCabins(cur)) {
     const c = cur.cabins[name];
     const p = prev?.cabins?.[name];
@@ -173,6 +223,16 @@ function diff(prev, cur, seatThreshold, triggers) {
         }
       }
     }
+
+    // eUpgrade transitions
+    if (triggers.eUpgrade !== false && c.eUpgrade) {
+      const pe = p?.eUpgrade;
+      if (c.eUpgrade.anySpace && !(pe && pe.anySpace)) {
+        lines.push(`⬆️ ${name}→${target} UPGRADE SPACE OPENED: ${c.eUpgrade.spaceCount} flight(s), from ${c.eUpgrade.minCredits} credits${c.eUpgrade.copay ? ` +$${c.eUpgrade.copay}` : ''} (${c.eUpgrade.bucket} on ${c.eUpgrade.flight})`);
+      } else if (c.eUpgrade.anySpace && pe && pe.anySpace && c.eUpgrade.minCredits < pe.minCredits) {
+        lines.push(`⬆️ ${name}→${target} upgrade now cheaper: ${pe.minCredits} → ${c.eUpgrade.minCredits} credits`);
+      }
+    }
   }
   return lines;
 }
@@ -189,41 +249,70 @@ async function pushover(title, message) {
   } catch (e) { log('  [pushover] failed', e.message); }
 }
 
-async function captureRecommendations(context, url) {
+// Turn on AC's eUpgrade toggle and pick the elite tier / target cabin.
+async function driveEUpgrade(page, eu) {
+  await page.getByText(/eUpgrade/i).first().click({ timeout: 15000 });
+  await page.waitForTimeout(1500);
+  if (eu.cabin && eu.cabin !== 'J') {
+    try {
+      await page.getByRole('combobox', { name: /Upgrade to/i }).click({ timeout: 6000 });
+      await page.waitForTimeout(600);
+      await page.locator(`li[option-value="${eu.cabin}"]`).click({ timeout: 6000, force: true });
+      await page.waitForTimeout(400);
+    } catch (_) {}
+  }
+  await page.getByRole('combobox', { name: /Aeroplan Elite status/i }).click({ timeout: 8000 });
+  await page.waitForTimeout(800);
+  await page.locator(`li[option-value="${eu.tierCode || 'SE'}"]`).click({ timeout: 8000, force: true });
+  await page.waitForTimeout(600);
+  await page.locator('button[type="submit"]:has-text("View")').first().click({ timeout: 8000, force: true });
+}
+
+async function captureRecommendations(context, url, euCfg) {
   const page = await context.newPage();
-  let payload = null;
+  let base = null, eu = null;
   page.on('response', async (res) => {
     try {
       if (!/lfs-appsync.*graphql/i.test(res.url())) return;
       const txt = await res.text();
-      if (/getFlightRecommendations/.test(txt) && /recommendations/.test(txt)) {
-        const j = JSON.parse(txt);
-        if (j?.data?.getFlightRecommendations?.responseData?.recommendations?.length) payload = j;
-      }
+      if (!/getFlightRecommendations/.test(txt) || !/recommendations/.test(txt)) return;
+      const j = JSON.parse(txt);
+      if (!j?.data?.getFlightRecommendations?.responseData?.recommendations?.length) return;
+      if (/"eUpgradeInfo":\s*\{/.test(txt)) eu = j; else base = j;
     } catch (_) {}
   });
   await page.goto('https://www.aircanada.com/', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
   await page.waitForTimeout(3500);
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
-  for (let i = 0; i < 50 && !payload; i++) await page.waitForTimeout(1000);
+  for (let i = 0; i < 50 && !base && !eu; i++) await page.waitForTimeout(1000);
+
+  if (euCfg && euCfg.enabled) {
+    try {
+      await driveEUpgrade(page, euCfg);
+      for (let i = 0; i < 40 && !eu; i++) await page.waitForTimeout(1000);
+      if (!eu) log('  eUpgrade: toggled but no annotated response captured (using plain fares).');
+    } catch (e) { log('  eUpgrade capture failed (' + e.message + ') — using plain fares.'); }
+  }
   await page.close();
-  return payload;
+  return eu || base; // eu payload is a superset (fares + upgrade detail)
 }
 
 async function runWatch(context, w, cfg) {
   const seatThreshold = w.seatThreshold ?? cfg.seatThreshold ?? 4;
-  const triggers = { ...{ priceChange: true, seatsLow: true, cheaperBucket: true }, ...(cfg.triggers || {}) };
+  const triggers = { ...{ priceChange: true, seatsLow: true, cheaperBucket: true, eUpgrade: true }, ...(cfg.triggers || {}) };
+  const euCfg = (w.eUpgrade || cfg.eUpgrade || null);
+  const euTargetName = euCfg && euCfg.enabled ? (CABIN_NAMES[euCfg.cabin] || 'Business') : null;
   const label = `${w.origin}→${w.destination} ${w.departureDate}…${w.returnDate}`;
   log(`Watch "${w.name || label}"`);
 
   const url = buildSearchUrl(w);
   let payload;
-  try { payload = await captureRecommendations(context, url); }
+  try { payload = await captureRecommendations(context, url, euCfg); }
   catch (e) { log('  navigation error', e.message); return; }
 
   if (!payload) { log('  ⚠️ no pricing response captured (possible bot block or sold-out date) — skipping, no alert.'); return; }
 
-  const cur = extractSnapshot(payload, seatThreshold);
+  const cur = extractSnapshot(payload, seatThreshold, euTargetName);
   const stateFile = path.join(STATE_DIR, `${(w.id || w.name || label).replace(/[^\w.-]+/g, '_')}.json`);
   const prev = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : null;
 
@@ -231,7 +320,7 @@ async function runWatch(context, w, cfg) {
 
   if (!prev) {
     fs.writeFileSync(stateFile, JSON.stringify(cur, null, 2));
-    await pushover(`✈️ Watch started: ${w.name || label}`, `Baseline bucket ladder:\n${compactLadder(cur)}\n\nI'll ping you when prices, buckets, or seat counts move.`);
+    await pushover(`✈️ Watch started: ${w.name || label}`, `Baseline:\n${compactLadder(cur)}\n\nI'll ping you when prices, buckets, seats, or upgrade space move.`);
     return;
   }
 
@@ -252,7 +341,6 @@ async function main() {
   SEAT_CEILING = cfg.disclosedSeatCeiling ?? 9;
   if (!watches.length) { log('No watches configured in watches.json'); return; }
 
-  // jitter: random delay before hitting AC so scheduled runs don't fire at an exact clock time
   const jitterMax = (process.env.NOJITTER ? 0 : (cfg.jitterMaxMinutes ?? 20)) * 60 * 1000;
   if (jitterMax > 0) {
     const j = Math.floor(Math.random() * jitterMax);
@@ -263,7 +351,7 @@ async function main() {
   const userDataDir = path.join(DIR, '.browser-profile');
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: cfg.headless !== false,
-    viewport: { width: 1440, height: 900 },
+    viewport: { width: 1440, height: 960 },
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     args: ['--disable-blink-features=AutomationControlled'],
   });
@@ -278,4 +366,5 @@ async function main() {
   }
 }
 
-main().catch(e => { log('FATAL', e); process.exit(1); });
+if (require.main === module) main().catch(e => { log('FATAL', e); process.exit(1); });
+module.exports = { extractSnapshot, fullLadder, compactLadder, diff };
