@@ -125,15 +125,20 @@ Two keys in `.env`. NOTE: in the original setup the token and user key were swap
 ### A0. Aeroplan award (points) availability — free partial replacement for seats.aero (requested, high priority)
 Goal: for each watched route, also report **Aeroplan award availability** (points price + award cabin availability) on AC-operated *and Star Alliance/partner* flights, with alerts when award space opens or the points price drops. This replaces the **Aeroplan slice** of seats.aero for free. It does NOT replace seats.aero's other ~23 programs (United/Delta/etc.) — those require querying other airlines' award engines and are out of scope.
 
-Confirmed feasible & anonymous (no Aeroplan login needed to *view* award prices):
-- AC's homepage booking widget has a checkbox `input#bkmg-desktop_searchTypeToggle` (aria "Book with Aeroplan points"). Toggling it puts the search into award/redemption mode.
-- The award search returns the same `getFlightRecommendations` structure but with points pricing (miles + taxes) instead of cash. Alongside cash mode, this gives a full picture per flight.
+**STATUS: BLOCKED (investigated 2026-08-19).** Award search *initiation* is anonymous, but the results page cannot currently be captured — see findings.
 
-Two implementation paths (investigate & pick):
-1. **Deep-link param (preferred if it exists):** determine whether an award search can be triggered by a URL param on `/aco/search` (like the cash deep link), so it can be captured the same headless-intercept way with no form-filling. Discover by doing one manual award search via the widget and inspecting the resulting `/availability` URL and the `getFlightRecommendations` request `variables.input` (diff vs cash — look for a redemption/fareType/points flag).
-2. **Drive the widget:** check `#bkmg-desktop_searchTypeToggle`, fill origin/dest (comboboxes), dates (`#bkmg-desktop_travelDates-formfield-1/2`, DD/MM), passengers (`#bkmg-desktop_selectTravelers`), click Search, then intercept the award response. More fragile; only if no deep-link param exists.
+What was learned:
+- The homepage widget has a checkbox `input#bkmg-desktop_searchTypeToggle` ("Book with Aeroplan points"). Turning it on and searching routes to a distinct **award deep-link**:
+  `https://www.aircanada.com/aeroplan/redeem/availability/outbound?org0=YYZ&dest0=LIM&org1=LIM&dest1=YYZ&departureDate0=YYYY-MM-DD&departureDate1=YYYY-MM-DD&ADT=2&YTH=1&CHD=0&INF=0&INS=0&lang=en-CA&tripType=R&marketCode=INT` (note: dates are YYYY-MM-DD, pax keys UPPERCASE, tripType=R — different format from the cash `/aco/search` deep link).
+- **BLOCKER:** the `/aeroplan/redeem/availability/*` route returns Akamai **"Access Denied" (403, errors.edgesuite.net)** to the automated browser — both on direct navigation AND when reached via the widget flow — even headed, with a warm profile, on a residential IP. The `/aco/` cash flow is NOT blocked; the `/aeroplan/redeem/` section has stricter bot protection. So the same technique that works for cash fails for award.
+- The award availability API endpoint/operation was therefore never captured (the redeem SPA never rendered results; only the i18n/content JSON loaded).
 
-Then: parse points price + award availability per cabin/flight into the snapshot (parallel to the cash ladder), add an "award" section to the ladder/alerts (e.g. "Aeroplan: Business 120k + $340 taxes, saver space on 2 flights"), and alert when award space appears or points price drops. Run award mode as a second capture per watch (like eUpgrade), config-gated (`"award": {"enabled": true}`).
+To pursue later (each uncertain):
+1. Try an **authenticated Aeroplan session** (log in with credentials, persist cookies) — award pages may treat a logged-in member's automated session more leniently; also many airlines only show award prices when signed in. Adds credential handling + likely 2FA + more fragility.
+2. Try to make the automated browser look more human on the redeem route (real click-through timing, mouse movement, referrer chain) to get past the stricter Akamai policy — may or may not work and could tighten over time.
+3. Accept that award is out of reach for free and keep seats.aero for award bookings.
+
+If unblocked: parse points price + award availability per cabin/flight into a parallel "award" ladder, alert when award space appears or points drop, run as a second config-gated capture per watch (`"award": {"enabled": true}`).
 
 ### A. Remote entry of new watches from an iPhone (requested)
 Goal: add a route (origin, destination, dates, passengers) from the phone without touching the mini.
