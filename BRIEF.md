@@ -122,6 +122,19 @@ Two keys in `.env`. NOTE: in the original setup the token and user key were swap
 
 ## 9. Backlog — features to build next
 
+### A0. Aeroplan award (points) availability — free partial replacement for seats.aero (requested, high priority)
+Goal: for each watched route, also report **Aeroplan award availability** (points price + award cabin availability) on AC-operated *and Star Alliance/partner* flights, with alerts when award space opens or the points price drops. This replaces the **Aeroplan slice** of seats.aero for free. It does NOT replace seats.aero's other ~23 programs (United/Delta/etc.) — those require querying other airlines' award engines and are out of scope.
+
+Confirmed feasible & anonymous (no Aeroplan login needed to *view* award prices):
+- AC's homepage booking widget has a checkbox `input#bkmg-desktop_searchTypeToggle` (aria "Book with Aeroplan points"). Toggling it puts the search into award/redemption mode.
+- The award search returns the same `getFlightRecommendations` structure but with points pricing (miles + taxes) instead of cash. Alongside cash mode, this gives a full picture per flight.
+
+Two implementation paths (investigate & pick):
+1. **Deep-link param (preferred if it exists):** determine whether an award search can be triggered by a URL param on `/aco/search` (like the cash deep link), so it can be captured the same headless-intercept way with no form-filling. Discover by doing one manual award search via the widget and inspecting the resulting `/availability` URL and the `getFlightRecommendations` request `variables.input` (diff vs cash — look for a redemption/fareType/points flag).
+2. **Drive the widget:** check `#bkmg-desktop_searchTypeToggle`, fill origin/dest (comboboxes), dates (`#bkmg-desktop_travelDates-formfield-1/2`, DD/MM), passengers (`#bkmg-desktop_selectTravelers`), click Search, then intercept the award response. More fragile; only if no deep-link param exists.
+
+Then: parse points price + award availability per cabin/flight into the snapshot (parallel to the cash ladder), add an "award" section to the ladder/alerts (e.g. "Aeroplan: Business 120k + $340 taxes, saver space on 2 flights"), and alert when award space appears or points price drops. Run award mode as a second capture per watch (like eUpgrade), config-gated (`"award": {"enabled": true}`).
+
 ### A. Remote entry of new watches from an iPhone (requested)
 Goal: add a route (origin, destination, dates, passengers) from the phone without touching the mini.
 - **Pushover cannot do this** — Pushover is outbound-only (server → phone); there is no inbound-message API to receive commands. Rule it out.
