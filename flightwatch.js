@@ -253,7 +253,7 @@ async function main() {
   if (!watches.length) { log('No watches configured in watches.json'); return; }
 
   // jitter: random delay before hitting AC so scheduled runs don't fire at an exact clock time
-  const jitterMax = (cfg.jitterMaxMinutes ?? 20) * 60 * 1000;
+  const jitterMax = (process.env.NOJITTER ? 0 : (cfg.jitterMaxMinutes ?? 20)) * 60 * 1000;
   if (jitterMax > 0) {
     const j = Math.floor(Math.random() * jitterMax);
     log(`jitter: waiting ${Math.round(j / 1000)}s (${(j / 60000).toFixed(1)} min) before capture`);
